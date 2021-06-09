@@ -1,0 +1,200 @@
+' Rabbit with 1000 Repos: Agnus and Denise's Robot Friend
+'
+' A simple demo in AMOS Professional showing off direct copper 
+' list usage and working around AMOS Pro bugs. 
+'
+' Copyright 2021 John Bintz. Code is licensed under the MIT license. 
+' Art is all rights reserved.
+'
+' Read more about the Copper functionality of the Agnus custom chip
+' at https://r1kr.blog/sections/amiga_custom_chipset   
+
+' Copper Animation Settings
+MOVE_DELTA=20
+_ANGLE_CHANGE_PER_SCANLINE=1
+_ANGLE_MOVE_PER_FRAME=15
+
+' Copper Rainbow definition
+Dim _COPPER_RAINBOW(10)
+
+_COPPER_RAINBOW(0)=$7F
+_COPPER_RAINBOW(1)=$F00
+_COPPER_RAINBOW(2)=$F0
+_COPPER_RAINBOW(3)=$F
+_COPPER_RAINBOW(4)=$FF0
+_COPPER_RAINBOW(5)=$F0F
+_COPPER_RAINBOW(6)=$FF
+_COPPER_RAINBOW(7)=$F70
+_COPPER_RAINBOW(8)=$70F
+_COPPER_RAINBOW(9)=$47F
+
+_TOTAL_RAINBOW_STEPS=9
+_CURRENT_RAINBOW_LINE=0
+_RAINBOW_STEP=30
+
+' Bamboo Animation Settings
+_ANIM_BANK=100
+_TOTAL_FRAMES=6
+
+' ******** 
+' * Calculations and code below here 
+' ******** 
+
+CURRENT_ANGLE=210
+
+Procedure AVERAGE_COLORS[LEFT,RIGHT,MASK,WEIGHT,_TOTAL_WEIGHT]
+   _AND_MASK=MASK*$F
+   _LEFT=(LEFT and _AND_MASK)/MASK
+   _RIGHT=(RIGHT and _AND_MASK)/MASK
+   _DIFF=_RIGHT-_LEFT
+   _AVERAGE=(_LEFT+(WEIGHT*_DIFF)/_TOTAL_WEIGHT)*MASK
+End Proc[_AVERAGE]
+
+' Precalculate Copper rainbow
+
+_RAINBOW_MEM_SIZE=_TOTAL_RAINBOW_STEPS*_RAINBOW_STEP
+Reserve As Work 80,_RAINBOW_MEM_SIZE*2
+_RAINBOW_MEM_START=Start(80)
+
+For I=0 To _RAINBOW_MEM_SIZE
+   _LEFT_RAINBOW=(I/_RAINBOW_STEP) mod _TOTAL_RAINBOW_STEPS
+   _RIGHT_RAINBOW=_LEFT_RAINBOW+1
+   
+   _RAINBOW_WEIGHT=I mod _RAINBOW_STEP
+   
+   _LEFT=_COPPER_RAINBOW(_LEFT_RAINBOW)
+   _RIGHT=_COPPER_RAINBOW(_RIGHT_RAINBOW)
+   
+   AVERAGE_COLORS[_LEFT,_RIGHT,$100,_RAINBOW_WEIGHT,_RAINBOW_STEP]
+   _RAINBOW_RED=Param
+   AVERAGE_COLORS[_LEFT,_RIGHT,$10,_RAINBOW_WEIGHT,_RAINBOW_STEP]
+   _RAINBOW_GREEN=Param
+   AVERAGE_COLORS[_LEFT,_RIGHT,$1,_RAINBOW_WEIGHT,_RAINBOW_STEP]
+   _RAINBOW_BLUE=Param
+   
+   _COLOR=_RAINBOW_RED+_RAINBOW_GREEN+_RAINBOW_BLUE
+
+   Doke _RAINBOW_MEM_START+(I*2),_COLOR
+Next I
+
+' animation
+
+_CURRENT_FRAME=0
+_FRAME_DELAY=5
+_CURRENT_FRAME_DELAY=0
+
+' Copper Animation Precalcs
+Dim CALCX(5)
+
+For LX=0 To 4
+   CALCX(LX)=((256*LX)/5)
+Next LX
+
+' Get animation loaded into Chip RAM and set up a screen 
+Load "Bamboo Anim.abk"
+Unpack 90 To 0
+
+' Get Agnus's and Denise's helpful robot friend under our control
+Copper Off 
+
+' Get Screen 0 rendering within copper list
+' This is a mashup of the settings needed to enable Copper and 
+' Bitplane DMA taken from: 
+'
+' https://www.markwrobel.dk/post/amiga-machine-code-letter6-blitter3/
+' https://www.reaktor.com/blog/crash-course-to-amiga-assembly-programming/ 
+' http://amigadev.elowar.com/read/ADCD_2.1/Hardware_Manual_guide/node0071.html 
+'
+' Wow, imagine having all these well thought-out resources in the mid
+' 90s when I was living in AMOS Professional...
+'
+' 4 Bitplanes
+Doke $DFF100,$4200
+' No even-odd planes 
+Doke $DFF102,$0
+Doke $DFF104,$0
+' No skips in bitplane data, AMOS bitplanes are contiguous 
+Doke $DFF108,0
+Doke $DFF10A,0
+' PAL Top/Bottom corners for the screen
+Doke $DFF08E,$2881
+Doke $DFF090,$28C1
+' Enable Copper and Bitplane DMA 
+Doke $DFF096,$8580
+
+' lol radians
+Degree 
+
+'Def Fn EVEN(A)=(A*2)/2
+
+Do 
+   ' The IFF animation from memory bank functions are broken
+   ' so we'll do it manually with compressed screen data. 
+   If _CURRENT_FRAME_DELAY=0
+      Unpack _ANIM_BANK+_CURRENT_FRAME
+      _CURRENT_FRAME=_CURRENT_FRAME+1
+      If _CURRENT_FRAME=_TOTAL_FRAMES
+         _CURRENT_FRAME=0
+      End If 
+   End If 
+   
+   _CURRENT_FRAME_DELAY=(_CURRENT_FRAME_DELAY+1) mod _FRAME_DELAY
+   
+   ' Use Screen 0 bitplanes 
+   ' The Copper needs to reset these every copper list we create
+   Cop Movel $E0,Phybase(0)
+   Cop Movel $E4,Phybase(1)
+   Cop Movel $E8,Phybase(2)
+   Cop Movel $EC,Phybase(3)
+   
+   For _COLOR_INDEX=1 To 15
+      Cop Move $180+(_COLOR_INDEX*2),Colour(_COLOR_INDEX)
+   Next _COLOR_INDEX
+   
+   COPPER_POINTER=Cop Logic+33+(4*15)
+   ANGLE=CURRENT_ANGLE
+   
+   For Y=33 To 313
+      ' Sine wave for the horizontal shifts. It's classic. 
+      DELTA=Sin(ANGLE)*Cos(_CURRENT_RAINBOW_LINE mod 360)*MOVE_DELTA
+      
+      _RAINBOW_LINE=_CURRENT_RAINBOW_LINE+Y
+      
+      _RAINBOW_CHECK=_RAINBOW_LINE mod _RAINBOW_MEM_SIZE
+
+      For LX=0 To 4
+         _COLOR=Deek(_RAINBOW_MEM_START+(_RAINBOW_CHECK*2))
+
+         ' Make it even and not go beyond the left edge.  
+         X=Max(0,CALCX(LX)+DELTA) and %11111110
+
+         ' Work around Cop Wait bug!
+         '
+         ' Cop Wait won't let you use the entire screen width. It 
+         ' tries to be too helpful, so we take over writing the X 
+         ' scanline position ourselves. 
+         ' Additionally the first bit of a WAIT instruction needs to
+         ' be 1 so this is a way of ensuring that what we Poke into 
+         ' that address is still counted as a WAIT instruction. 
+         TY=Y mod 256
+         Cop Wait 0,TY
+         Poke COPPER_POINTER,X+1
+         Poke COPPER_POINTER+1,TY
+         Cop Move $180,_COLOR
+         
+         COPPER_POINTER=COPPER_POINTER+8
+         
+         _RAINBOW_CHECK=(_RAINBOW_CHECK+5) mod _RAINBOW_MEM_SIZE
+      Next LX
+
+      ANGLE=(ANGLE+_ANGLE_CHANGE_PER_SCANLINE) mod 360
+   Next Y
+
+   Cop Wait $FE,$FF
+
+   Cop Swap 
+   Wait Vbl 
+   
+   CURRENT_ANGLE=CURRENT_ANGLE+_ANGLE_MOVE_PER_FRAME
+   _CURRENT_RAINBOW_LINE=(_CURRENT_RAINBOW_LINE+3) mod _RAINBOW_MEM_SIZE
+Loop 
